@@ -1,0 +1,156 @@
+name: Malawi Flood EWS — Automated Pipeline
+
+on:
+  schedule:
+    - cron: '0 6 */12 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no SMS sent)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+      threshold:
+        description: 'Flood probability threshold'
+        required: false
+        default: '0.5'
+
+jobs:
+  flood-detection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install rasterio scikit-learn xgboost joblib numpy \
+                      gdown python-dotenv africastalking requests
+
+      - name: Download models from Drive
+        env:
+          DRIVE_ID_RF:        ${{ secrets.DRIVE_ID_RF }}
+          DRIVE_ID_XGB:       ${{ secrets.DRIVE_ID_XGB }}
+          DRIVE_ID_SCALER:    ${{ secrets.DRIVE_ID_SCALER }}
+          DRIVE_ID_IMPUTER:   ${{ secrets.DRIVE_ID_IMPUTER }}
+          DRIVE_ID_FEATURES:  ${{ secrets.DRIVE_ID_FEATURES }}
+          DRIVE_ID_TERRAIN:   ${{ secrets.DRIVE_ID_TERRAIN }}
+          DRIVE_ID_IDAI_MASK: ${{ secrets.DRIVE_ID_IDAI_MASK }}
+          DRIVE_ID_IDAI_SAR:  ${{ secrets.DRIVE_ID_IDAI_SAR }}
+          DRIVE_ID_IDAI_RAIN: ${{ secrets.DRIVE_ID_IDAI_RAIN }}
+          GDRIVE_FOLDER: ./MalawiFloodEWS
+        run: |
+          mkdir -p ./MalawiFloodEWS
+          python data_sync.py --models-only --folder ./MalawiFloodEWS
+          python data_sync.py --static --folder ./MalawiFloodEWS
+
+      - name: Download latest flood data
+        env:
+          DRIVE_ID_AUTO_MASK: ''
+          DRIVE_ID_AUTO_SAR:  ''
+          DRIVE_ID_AUTO_DIFF: ''
+          DRIVE_ID_AUTO_RAIN: ''
+          GDRIVE_FOLDER: ./MalawiFloodEWS
+        run: |
+          python - <<'EOF'
+          import os, datetime
+          import gdown
+
+          folder = './MalawiFloodEWS'
+          today  = datetime.datetime.utcnow().strftime('%Y%m%d')
+
+          files = {
+            f'flood_mask_auto_{today}.tif': os.getenv('DRIVE_ID_AUTO_MASK',''),
+            f'sar_after_auto_{today}.tif':  os.getenv('DRIVE_ID_AUTO_SAR', ''),
+            f'sar_diff_auto_{today}.tif':   os.getenv('DRIVE_ID_AUTO_DIFF',''),
+            f'chirps_rain_auto_{today}.tif':os.getenv('DRIVE_ID_AUTO_RAIN',''),
+          }
+
+          for fname, fid in files.items():
+              if fid:
+                  dest = os.path.join(folder, fname)
+                  print(f'Downloading {fname}...')
+                  gdown.download(f'https://drive.google.com/uc?id={fid}',
+                                 dest, quiet=False)
+              else:
+                  print(f'No ID for {fname} — skipping')
+          EOF
+
+      - name: Run flood inference
+        env:
+          GDRIVE_FOLDER: ./MalawiFloodEWS
+          AT_API_KEY:    ${{ secrets.AT_API_KEY }}
+          AT_USERNAME:   ${{ secrets.AT_USERNAME }}
+          AT_SANDBOX:    ${{ secrets.AT_SANDBOX }}
+          AT_SENDER_ID:  ${{ secrets.AT_SENDER_ID }}
+        run: |
+          DRY_RUN="${{ github.event.inputs.dry_run || 'true' }}"
+          THRESHOLD="${{ github.event.inputs.threshold || '0.5' }}"
+          if [ "$DRY_RUN" = "true" ]; then
+            python auto_pipeline.py \
+              --folder ./MalawiFloodEWS \
+              --threshold $THRESHOLD \
+              --dry-run
+          else
+            python auto_pipeline.py \
+              --folder ./MalawiFloodEWS \
+              --threshold $THRESHOLD
+          fi
+
+      - name: Upload detection log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flood-detection-log-${{ github.run_number }}
+          path: flood_detection_log.jsonl
+          retention-days: 90
+
+      - name: Post run summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          log_file = 'flood_detection_log.jsonl'
+          if not os.path.exists(log_file):
+              print('No log file found')
+              exit(0)
+
+          with open(log_file) as f:
+              lines = f.readlines()
+
+          if not lines:
+              print('Log empty')
+              exit(0)
+
+          latest = json.loads(lines[-1])
+          summary = f"""
+          ## Malawi Flood EWS — Run Summary
+
+          | Field | Value |
+          |-------|-------|
+          | Date | {latest.get('run_date','—')} |
+          | Flood area | {latest.get('flood_area', 0):.1f} km² |
+          | Alert level | {latest.get('alert_level','—')} |
+          | ML flood fraction | {latest.get('ml_flood_fraction', 0):.3f} |
+          | SMS sent | {latest.get('sms_sent', False)} |
+          | Status | {latest.get('status','—')} |
+          | Errors | {latest.get('errors', [])} |
+          """
+          print(summary)
+
+          summary_file = os.getenv('GITHUB_STEP_SUMMARY','')
+          if summary_file:
+              with open(summary_file, 'a') as f:
+                  f.write(summary)
+          EOF
