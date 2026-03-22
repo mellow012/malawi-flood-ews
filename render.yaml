@@ -1,5 +1,4 @@
 services:
-  # ── Streamlit Dashboard ──────────────────────────────────────────
   - type: web
     name: malawi-flood-ews
     runtime: python
@@ -7,25 +6,6 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
-    envVars:
-      - key: GDRIVE_FOLDER
-        value: /opt/render/project/data/MalawiFloodEWS
-      - key: AT_API_KEY
-        sync: false   # set in Render dashboard — never commit API keys
-      - key: AT_USERNAME
-        sync: false
-      - key: AT_SANDBOX
-        value: "false"
-
-  # ── Automated Pipeline (cron job every 12 hours) ─────────────────
-  - type: cron
-    name: malawi-flood-pipeline
-    runtime: python
-    region: oregon
-    plan: free
-    schedule: "0 */12 * * *"   # every 12 hours (matches S1 revisit)
-    buildCommand: pip install -r requirements.txt
-    startCommand: python auto_pipeline.py --folder /opt/render/project/data/MalawiFloodEWS
     envVars:
       - key: GDRIVE_FOLDER
         value: /opt/render/project/data/MalawiFloodEWS
