@@ -4,7 +4,7 @@ services:
     runtime: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python data_sync.py --models-only
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
       - key: GDRIVE_FOLDER
