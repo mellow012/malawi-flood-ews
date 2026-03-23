@@ -1,472 +1,278 @@
 """
-Malawi Flood EWS — Report Generator Page
-Generates downloadable PDF/HTML situation reports for DoDMA and Red Cross
+Malawi Flood EWS — Situation Report Generator
+Generates downloadable PDF-style text reports for DoDMA and Red Cross
 """
 
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
 import datetime
-import json
-import io
 
 
-# ── DATA ─────────────────────────────────────────────────────────────────────
-@st.cache_data
-def get_weekly_summary() -> pd.DataFrame:
-    """Flood extent summary by week — last 12 weeks."""
-    weeks = pd.date_range(end=datetime.date.today(), periods=12, freq='W')
-    np.random.seed(42)
-    base = np.array([12,15,18,22,28,35,48,62,78,95,88,75], dtype=float)
-    return pd.DataFrame({
-        'week_ending':  weeks,
-        'flood_area':   np.round(base + np.random.normal(0,2,12), 1),
-        'pop_at_risk':  (base * 820 + np.random.normal(0,500,12)).astype(int),
-        'alerts_sent':  np.random.randint(0, 8, 12),
-        'rain_7d':      np.round(np.random.uniform(20,80,12), 1),
-    })
+# ── Shared data for reports ───────────────────────────────────────────────────
+_LIVE = {
+    'flood_area_km2': 128.4, 'alert_level': 'HIGH',
+    'last_updated': '2026-03-22 03:09', 'sar_pass': '2026-03-22',
+    'pop_at_risk': 145700, 'villages': 78,
+    'chikwawa_km2': 78.3, 'nsanje_km2': 50.1,
+}
+
+_DISTRICT_DATA = [
+    {'district':'Chikwawa',       'risk':'HIGH',  'flood_km2':78.3, 'pop':84200,  'villages':47, 'status':'ACTIVE'},
+    {'district':'Nsanje',         'risk':'HIGH',  'flood_km2':50.1, 'pop':61500,  'villages':31, 'status':'ACTIVE'},
+    {'district':'Blantyre Rural', 'risk':'MEDIUM','flood_km2':8.3,  'pop':12300,  'villages':8,  'status':'WATCH'},
+    {'district':'Thyolo',         'risk':'LOW',   'flood_km2':0.0,  'pop':2100,   'villages':0,  'status':'CLEAR'},
+]
+
+_FOCAL_POINTS = [
+    {'name':'James Banda', 'role':'Village Head',  'district':'Chikwawa','phone':'+265991234567'},
+    {'name':'Grace Mwale', 'role':'DoDMA Officer', 'district':'Nsanje',  'phone':'+265888345678'},
+    {'name':'Peter Chirwa','role':'Red Cross',     'district':'Nsanje',  'phone':'+265777456789'},
+    {'name':'Mary Phiri',  'role':'Health Worker', 'district':'Chikwawa','phone':'+265999567890'},
+]
 
 
-@st.cache_data
-def get_district_weekly() -> pd.DataFrame:
-    """Per-district weekly flood area — last 4 weeks."""
-    weeks  = pd.date_range(end=datetime.date.today(), periods=4, freq='W')
-    data   = []
-    for w in weeks:
-        data.append({'week': w.strftime('%b %d'), 'district': 'Chikwawa',
-                     'flood_area': round(np.random.uniform(40,80), 1),
-                     'pop_at_risk': np.random.randint(25000, 55000)})
-        data.append({'week': w.strftime('%b %d'), 'district': 'Nsanje',
-                     'flood_area': round(np.random.uniform(25,55), 1),
-                     'pop_at_risk': np.random.randint(18000, 38000)})
-        data.append({'week': w.strftime('%b %d'), 'district': 'Blantyre Rural',
-                     'flood_area': round(np.random.uniform(5,20), 1),
-                     'pop_at_risk': np.random.randint(2000, 8000)})
-    return pd.DataFrame(data)
+# ── Report builders ───────────────────────────────────────────────────────────
+def _build_sitrep(report_date: str, author: str, include_forecast: bool) -> str:
+    districts_txt = "\n".join([
+        f"  - {d['district']}: {d['flood_km2']} km² flooded, "
+        f"{d['pop']:,} people at risk, {d['villages']} villages — {d['status']}"
+        for d in _DISTRICT_DATA
+    ])
+    focal_txt = "\n".join([
+        f"  - {f['name']} ({f['role']}, {f['district']}): {f['phone']}"
+        for f in _FOCAL_POINTS
+    ])
+    forecast_section = ""
+    if include_forecast:
+        forecast_section = """
+5. FORECAST (next 48 hours)
+   - Rainfall: 15–25 mm expected across Lower Shire Valley
+   - River levels: Shire River at Chikwawa Bridge expected to remain HIGH
+   - Flood extent: Risk of further expansion by 10–20 km²
+   - Recommendation: Maintain HIGH alert level; prepare contingency for CRITICAL
+
+"""
+    return f"""MALAWI DISASTER OPERATIONS MANAGEMENT AUTHORITY (DoDMA)
+DEPARTMENT OF CLIMATE CHANGE AND METEOROLOGICAL SERVICES
+═══════════════════════════════════════════════════════════════
+
+FLOOD SITUATION REPORT
+Lower Shire Valley — Chikwawa & Nsanje Districts
+
+Report Date:   {report_date}
+Report Time:   {datetime.datetime.now().strftime('%H:%M')} UTC
+Prepared by:   {author}
+Data Source:   Sentinel-1 SAR + RF/XGBoost Ensemble (Malawi Flood EWS)
+SAR Pass:      {_LIVE['sar_pass']}
+Alert Level:   {_LIVE['alert_level']}
+
+───────────────────────────────────────────────────────────────
+
+1. CURRENT SITUATION OVERVIEW
+
+   Total flooded area:   {_LIVE['flood_area_km2']} km²
+   Population at risk:   {_LIVE['pop_at_risk']:,} people
+   Villages affected:    {_LIVE['villages']}
+   Districts on alert:   Chikwawa (HIGH), Nsanje (HIGH)
+   Last model update:    {_LIVE['last_updated']} UTC
+
+2. DISTRICT-LEVEL STATUS
+
+{districts_txt}
+
+3. PRIORITY ACTIONS REQUIRED
+
+   a) IMMEDIATE (within 6 hours)
+      - Activate flood shelters in Chapananga, Makhanga, and Bangula
+      - Deploy SMS alerts to all active focal points
+      - Station monitoring teams at Shire River gauge stations
+      - Advise communities within 5 km of Shire River to prepare evacuation
+
+   b) SHORT-TERM (within 24 hours)
+      - Submit district-level damage assessments to DoDMA headquarters
+      - Coordinate with Red Cross Malawi for emergency supply prepositioning
+      - Restrict motor vehicle access to low-lying roads near floodplain
+      - Conduct headcount at all evacuation shelters
+
+   c) COORDINATION
+      - Report to DoDMA National Hotline: 1997
+      - Red Cross Malawi Emergency: +265 1 758 110
+      - Chikwawa DEC: +265 993 000 001
+      - Nsanje DEC: +265 993 000 002
+
+{forecast_section}
+4. FOCAL POINT CONTACTS
+
+{focal_txt}
+
+───────────────────────────────────────────────────────────────
+
+5. MODEL TECHNICAL NOTE
+
+   Detection method:  Sentinel-1 SAR C-band (VV+VH polarisation)
+   ML model:          Random Forest + XGBoost Ensemble
+   Accuracy (AUC):    99.84%
+   Spatial acc (IoU): 97.99%
+   Training event:    Cyclone Freddy 2023
+   Validation event:  Cyclone Idai 2019 (hold-out)
+   Pipeline:          AUTO_RollingDetection (GitHub Actions)
+   Repository:        github.com/mellow012/malawi-flood-ews
+
+───────────────────────────────────────────────────────────────
+END OF SITUATION REPORT
+Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
+Malawi Flood Early Warning System
+"""
 
 
-def build_report_html(
-    period: str,
-    start_date: str,
-    end_date: str,
-    summary: dict,
-    district_data: pd.DataFrame,
-    include_map: bool,
-    include_alerts: bool,
-    include_model: bool,
-    prepared_by: str,
-) -> str:
-    """Generate a complete HTML situation report."""
+def _build_alert_bulletin(alert_level: str, districts: list[str]) -> str:
+    level_actions = {
+        'CRITICAL': 'EVACUATE IMMEDIATELY. Move to designated flood shelters now.',
+        'HIGH':     'PREPARE TO EVACUATE. Move valuables to safety and be ready to move.',
+        'MEDIUM':   'STAY ALERT. Monitor water levels and follow official guidance.',
+        'LOW':      'No immediate action required. Continue monitoring.',
+    }
+    return f"""MALAWI FLOOD EARLY WARNING SYSTEM
+FLOOD ALERT BULLETIN
+{'='*50}
 
-    alert_section = ""
-    if include_alerts:
-        alert_section = """
-        <h2>Alert Activity</h2>
-        <table>
-            <tr><th>Date</th><th>Level</th><th>District</th>
-                <th>Recipients</th><th>Status</th></tr>
-            <tr><td>2026-03-21 06:14</td><td style="color:#ff4444;">CRITICAL</td>
-                <td>Chikwawa</td><td>4</td><td>✅ Sent</td></tr>
-            <tr><td>2026-03-20 18:32</td><td style="color:#ff8800;">HIGH</td>
-                <td>Nsanje</td><td>3</td><td>✅ Sent</td></tr>
-            <tr><td>2026-03-19 09:05</td><td style="color:#ffcc00;">MEDIUM</td>
-                <td>Both</td><td>5</td><td>✅ Sent</td></tr>
-        </table>
-        """
+ALERT LEVEL: {alert_level}
+DATE/TIME:   {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} UTC
+AREA:        {', '.join(districts)}
+SOURCE:      DoDMA / Malawi Flood EWS
 
-    model_section = ""
-    if include_model:
-        model_section = """
-        <h2>Model Performance Summary</h2>
-        <table>
-            <tr><th>Metric</th><th>Value</th><th>Reference</th></tr>
-            <tr><td>AUC-ROC</td><td>99.84%</td>
-                <td>Freddy 2023 → Idai 2019</td></tr>
-            <tr><td>Ensemble IoU</td><td>97.99%</td>
-                <td>Hold-out test event</td></tr>
-            <tr><td>Precision (flood)</td><td>99%</td><td>—</td></tr>
-            <tr><td>Recall (flood)</td><td>99%</td><td>—</td></tr>
-            <tr><td>Top feature</td>
-                <td>rain_event (SHAP = 2.61)</td><td>—</td></tr>
-        </table>
-        <p style="font-size:11px;color:#666;">
-            Model trained on Cyclone Freddy 2023 flood labels.
-            Tested on Cyclone Idai 2019 (independent hold-out event).
-            Threshold: 0.50 default; 0.15 recommended for slow-onset events.
-        </p>
-        """
+ACTION REQUIRED:
+{level_actions.get(alert_level, 'Monitor situation.')}
 
-    district_rows = ""
-    for _, row in district_data.groupby('district').last().reset_index().iterrows():
-        district_rows += f"""
-        <tr>
-            <td>{row['district']}</td>
-            <td>{row['flood_area']:.1f} km²</td>
-            <td>{row['pop_at_risk']:,}</td>
-        </tr>"""
+CURRENT CONDITIONS:
+- Flooded area:     {_LIVE['flood_area_km2']} km²
+- People at risk:   {_LIVE['pop_at_risk']:,}
+- Shire River:      RISING — above seasonal average
 
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Malawi Flood EWS — {period} Report</title>
-<style>
-  body {{
-    font-family: Arial, sans-serif; font-size: 13px;
-    color: #2c3e50; max-width: 900px; margin: 0 auto; padding: 30px;
-    line-height: 1.6;
-  }}
-  .header {{
-    background: linear-gradient(135deg, #0a1628, #1b4f72);
-    color: white; padding: 25px 30px; border-radius: 8px;
-    margin-bottom: 25px;
-  }}
-  .header h1 {{ margin: 0 0 5px; font-size: 22px; }}
-  .header p  {{ margin: 0; opacity: 0.8; font-size: 12px; }}
-  .badge {{
-    display: inline-block; background: rgba(0,212,255,0.2);
-    color: #00d4ff; border: 1px solid rgba(0,212,255,0.4);
-    padding: 3px 10px; border-radius: 12px; font-size: 11px;
-    margin-top: 8px;
-  }}
-  .metrics {{
-    display: grid; grid-template-columns: repeat(4, 1fr);
-    gap: 12px; margin-bottom: 25px;
-  }}
-  .metric-card {{
-    background: #f8f9fa; border: 1px solid #dee2e6;
-    border-top: 4px solid #2e86c1; border-radius: 6px;
-    padding: 12px; text-align: center;
-  }}
-  .metric-value {{
-    font-size: 22px; font-weight: bold; color: #1b4f72;
-    font-family: monospace;
-  }}
-  .metric-label {{ font-size: 11px; color: #666; margin-top: 3px; }}
-  h2 {{
-    color: #1b4f72; font-size: 15px; border-bottom: 2px solid #2e86c1;
-    padding-bottom: 5px; margin-top: 25px;
-  }}
-  table {{
-    width: 100%; border-collapse: collapse; margin: 10px 0 15px;
-    font-size: 12px;
-  }}
-  th {{
-    background: #1b4f72; color: white; padding: 8px 10px;
-    text-align: left;
-  }}
-  td {{ padding: 7px 10px; border-bottom: 1px solid #dee2e6; }}
-  tr:nth-child(even) td {{ background: #f8f9fa; }}
-  .risk-critical {{ color: #ff4444; font-weight: bold; }}
-  .risk-high     {{ color: #ff8800; font-weight: bold; }}
-  .risk-medium   {{ color: #cc8800; font-weight: bold; }}
-  .risk-low      {{ color: #007700; font-weight: bold; }}
-  .footer {{
-    margin-top: 40px; padding-top: 15px;
-    border-top: 1px solid #dee2e6;
-    font-size: 11px; color: #999; text-align: center;
-  }}
-  .disclaimer {{
-    background: #fff3cd; border: 1px solid #ffc107;
-    border-radius: 6px; padding: 10px 15px;
-    font-size: 11px; margin-top: 20px; color: #856404;
-  }}
-  @media print {{
-    body {{ padding: 10px; }}
-    .header {{ -webkit-print-color-adjust: exact; }}
-  }}
-</style>
-</head>
-<body>
+INSTRUCTIONS FOR COMMUNITY MEMBERS:
+1. Move to higher ground if water is rising near your home
+2. Do not attempt to cross flooded roads or rivers
+3. Keep children and elderly away from water
+4. Bring livestock and valuables to safety
+5. Listen for updates on MBC Radio and community announcements
 
-<div class="header">
-  <h1>🌊 Malawi Flood Early Warning System</h1>
-  <p>Situation Report — {period} Period: {start_date} to {end_date}</p>
-  <p>Lower Shire Valley — Chikwawa &amp; Nsanje Districts</p>
-  <span class="badge">AUTOMATED REPORT · SENTINEL-1 SAR + ML ENSEMBLE</span>
-</div>
+EMERGENCY CONTACTS:
+- DoDMA Hotline:    1997 (free call)
+- Red Cross:        +265 1 758 110
+- Ambulance:        998
 
-<div class="metrics">
-  <div class="metric-card">
-    <div class="metric-value">{summary['flood_area']} km²</div>
-    <div class="metric-label">Total flood extent</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">{summary['pop_at_risk']:,}</div>
-    <div class="metric-label">People at risk</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">{summary['alerts_sent']}</div>
-    <div class="metric-label">SMS alerts sent</div>
-  </div>
-  <div class="metric-card">
-    <div class="metric-value">{summary['rain_7d']} mm</div>
-    <div class="metric-label">7-day rainfall</div>
-  </div>
-</div>
-
-<h2>Executive Summary</h2>
-<p>
-  During the {period.lower()} period from <strong>{start_date}</strong> to
-  <strong>{end_date}</strong>, the Malawi Flood EWS detected an estimated
-  <strong>{summary['flood_area']} km²</strong> of flood inundation across the
-  Lower Shire Valley, affecting approximately
-  <strong>{summary['pop_at_risk']:,} people</strong> in Chikwawa and Nsanje
-  Districts. The system dispatched <strong>{summary['alerts_sent']} SMS alerts
-  </strong> to community focal points. Seven-day accumulated rainfall was
-  <strong>{summary['rain_7d']} mm</strong>
-  {'— above the 80 mm alert threshold.' if float(summary['rain_7d']) > 80
-   else '— below the 80 mm alert threshold.'}
-</p>
-
-<h2>District Flood Status</h2>
-<table>
-  <tr><th>District</th><th>Flood Area</th><th>Pop. at Risk</th></tr>
-  {district_rows}
-</table>
-
-{alert_section}
-{model_section}
-
-<h2>Data Sources &amp; Methodology</h2>
-<table>
-  <tr><th>Layer</th><th>Source</th><th>Resolution</th><th>Update frequency</th></tr>
-  <tr><td>SAR flood extent</td><td>ESA Sentinel-1 GRD (Copernicus)</td>
-      <td>10m</td><td>Every 6–12 days</td></tr>
-  <tr><td>Rainfall</td><td>CHIRPS v2.0</td>
-      <td>~5.5 km</td><td>Daily</td></tr>
-  <tr><td>Terrain</td><td>SRTM DEM (NASA/USGS)</td>
-      <td>30m</td><td>Static</td></tr>
-  <tr><td>ML model</td><td>RF + XGBoost ensemble</td>
-      <td>1 km²</td><td>Per SAR acquisition</td></tr>
-  <tr><td>Alerts</td><td>Africa's Talking API (Airtel/TNM)</td>
-      <td>—</td><td>Per detection</td></tr>
-</table>
-
-<div class="disclaimer">
-  ⚠️ <strong>Disclaimer:</strong> This report is generated automatically from
-  satellite data and machine learning model outputs. Flood extent estimates
-  should be validated with field reports before operational decisions are made.
-  Model confidence: 97.99% IoU (Cyclone Idai 2019 hold-out test).
-  Contact DoDMA (+265 1 788 888) or use the dashboard for the latest data.
-</div>
-
-<div class="footer">
-  <p>
-    Prepared by: {prepared_by} &nbsp;|&nbsp;
-    Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
-    &nbsp;|&nbsp;
-    System: Malawi Flood EWS v1.0 &nbsp;|&nbsp;
-    GitHub: github.com/mellow012/malawi-flood-ews
-  </p>
-  <p>
-    Partners: DoDMA Malawi · Malawi Red Cross · UNICEF Malawi · MASDAP
-    &nbsp;|&nbsp; Data: ESA Copernicus · CHIRPS · SRTM
-  </p>
-</div>
-
-</body>
-</html>"""
+Issued by: Department of Disaster Management Affairs (DoDMA)
+{'='*50}
+"""
 
 
-# ── MAIN ─────────────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 def show() -> None:
     st.markdown("""
     <div class="main-header">
         <h1>📄 Report Generator</h1>
-        <p>Generate downloadable situation reports for DoDMA, Red Cross, and stakeholders</p>
-        <span class="header-badge">WEEKLY · FORTNIGHTLY · MONTHLY · CUSTOM</span>
+        <p>Generate situation reports and alert bulletins for DoDMA, Red Cross, and field teams</p>
+        <span class="header-badge">SITREP · ALERT BULLETIN · FIELD BRIEF</span>
     </div>
     """, unsafe_allow_html=True)
 
-    weekly_df  = get_weekly_summary()
-    district_w = get_district_weekly()
+    tab1, tab2, tab3 = st.tabs(["📋 Situation Report", "📢 Alert Bulletin", "📊 Summary Stats"])
 
-    col_left, col_right = st.columns([1, 1.4])
+    # ── Tab 1: Situation Report ───────────────────────────────────────
+    with tab1:
+        col_cfg, col_preview = st.columns([1, 1.5])
+        with col_cfg:
+            st.markdown('<p class="section-header">Report Configuration</p>', unsafe_allow_html=True)
+            report_date    = st.date_input("Report date", value=datetime.date.today())
+            author         = st.text_input("Prepared by", value="DoDMA Duty Officer")
+            include_forecast = st.checkbox("Include 48-hour forecast section", value=True)
+            st.markdown("---")
+            st.markdown('<p class="section-header">Include Sections</p>', unsafe_allow_html=True)
+            inc_districts  = st.checkbox("District status table", value=True)
+            inc_actions    = st.checkbox("Priority actions", value=True)
+            inc_focal      = st.checkbox("Focal point contacts", value=True)
+            inc_technical  = st.checkbox("Model technical note", value=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            generate_btn = st.button("📄 Generate Situation Report", use_container_width=True)
 
-    # ── Configuration panel ──────────────────────────────────────────
-    with col_left:
-        st.markdown('<p class="section-header">Report Configuration</p>',
-                    unsafe_allow_html=True)
+        with col_preview:
+            st.markdown('<p class="section-header">Report Preview</p>', unsafe_allow_html=True)
+            report_text = _build_sitrep(
+                report_date=str(report_date),
+                author=author,
+                include_forecast=include_forecast,
+            )
+            st.text_area("", value=report_text, height=480, label_visibility="collapsed")
+            st.download_button(
+                label="⬇️ Download as .txt",
+                data=report_text,
+                file_name=f"malawi_flood_sitrep_{report_date}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
-        period = st.selectbox(
-            "Report period",
-            ["Weekly", "Fortnightly", "Monthly", "Custom range"])
+    # ── Tab 2: Alert Bulletin ─────────────────────────────────────────
+    with tab2:
+        col_cfg2, col_prev2 = st.columns([1, 1.5])
+        with col_cfg2:
+            st.markdown('<p class="section-header">Bulletin Configuration</p>', unsafe_allow_html=True)
+            alert_level = st.selectbox("Alert level", ["HIGH", "CRITICAL", "MEDIUM", "LOW"])
+            districts   = st.multiselect("Affected districts",
+                                         ["Chikwawa","Nsanje","Blantyre Rural","Thyolo","Phalombe"],
+                                         default=["Chikwawa","Nsanje"])
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#1a0a00;border:1px solid #ff6600;border-radius:8px;
+                        padding:0.8rem 1rem;font-size:0.82rem;color:#c8d8e8;line-height:1.8;'>
+                <span style='color:#ff6600;font-weight:600;'>Alert level: {alert_level}</span><br>
+                Districts: {', '.join(districts) if districts else '—'}<br>
+                Flood area: {_LIVE['flood_area_km2']} km²<br>
+                Pop. at risk: {_LIVE['pop_at_risk']:,}
+            </div>
+            """, unsafe_allow_html=True)
 
-        today = datetime.date.today()
-        if period == "Weekly":
-            start = today - datetime.timedelta(days=7)
-        elif period == "Fortnightly":
-            start = today - datetime.timedelta(days=14)
-        elif period == "Monthly":
-            start = today - datetime.timedelta(days=30)
-        else:
-            start = st.date_input("Start date",
-                                  value=today - datetime.timedelta(days=7))
+        with col_prev2:
+            st.markdown('<p class="section-header">Bulletin Preview</p>', unsafe_allow_html=True)
+            bulletin_text = _build_alert_bulletin(alert_level, districts or ["Chikwawa","Nsanje"])
+            st.text_area("", value=bulletin_text, height=480, label_visibility="collapsed")
+            st.download_button(
+                label="⬇️ Download Alert Bulletin",
+                data=bulletin_text,
+                file_name=f"malawi_flood_bulletin_{datetime.date.today()}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
-        end_date = today
-        if period == "Custom range":
-            end_date = st.date_input("End date", value=today)
+    # ── Tab 3: Summary Stats ──────────────────────────────────────────
+    with tab3:
+        st.markdown('<p class="section-header">Current Situation at a Glance</p>', unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        for col, (val, label, color) in zip([c1,c2,c3,c4],[
+            (f"{_LIVE['flood_area_km2']} km²", "Total flooded",    "#ff6600"),
+            (f"{_LIVE['pop_at_risk']:,}",        "People at risk",   "#ffcc00"),
+            (str(_LIVE['villages']),             "Villages affected","#ff6600"),
+            (_LIVE['alert_level'],               "Alert level",      "#ff4444"),
+        ]):
+            with col:
+                st.markdown(f"""
+                <div class="stat-pill">
+                    <div class="stat-pill-val" style='color:{color};'>{val}</div>
+                    <div class="stat-pill-label">{label}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown('<p class="section-header">Report Sections</p>',
-                    unsafe_allow_html=True)
-        include_exec    = st.checkbox("Executive summary",     value=True,  disabled=True)
-        include_map     = st.checkbox("Flood map snapshot",    value=True)
-        include_alerts  = st.checkbox("Alert activity log",    value=True)
-        include_model   = st.checkbox("Model performance",     value=False)
-        include_sources = st.checkbox("Data sources table",    value=True,  disabled=True)
-
-        st.markdown("---")
-        st.markdown('<p class="section-header">Report Details</p>',
-                    unsafe_allow_html=True)
-        prepared_by  = st.text_input("Prepared by",
-                                     value="Malawi Flood EWS Automated System")
-        distribution = st.multiselect(
-            "Distribution list",
-            ["DoDMA National Office", "Chikwawa District Officer",
-             "Nsanje District Officer", "Malawi Red Cross",
-             "UNICEF Malawi", "World Food Programme"],
-            default=["DoDMA National Office", "Chikwawa District Officer",
-                     "Nsanje District Officer"])
-
-        st.markdown("---")
-        generate_btn = st.button("📄 Generate Report", type="primary")
-
-    # ── Preview panel ────────────────────────────────────────────────
-    with col_right:
-        st.markdown('<p class="section-header">Period Summary</p>',
-                    unsafe_allow_html=True)
-
-        # Sparkline of flood area
-        fig_spark = go.Figure()
-        fig_spark.add_trace(go.Scatter(
-            x=weekly_df['week_ending'],
-            y=weekly_df['flood_area'],
-            mode='lines+markers',
-            line=dict(color='#00d4ff', width=2),
-            marker=dict(size=5),
-            fill='tozeroy',
-            fillcolor='rgba(0,212,255,0.08)'))
-        fig_spark.add_hline(y=100, line_dash='dash', line_color='#ffcc00',
-                            annotation_text='MEDIUM threshold',
-                            annotation_font_color='#ffcc00')
-        fig_spark.add_hline(y=150, line_dash='dash', line_color='#ff8800',
-                            annotation_text='HIGH threshold',
-                            annotation_font_color='#ff8800')
-        fig_spark.update_layout(
-            paper_bgcolor='#0a1628', plot_bgcolor='#0a1628',
-            font=dict(color='#c8d8e8'),
-            xaxis=dict(gridcolor='#1e3a5a', title=None),
-            yaxis=dict(gridcolor='#1e3a5a', title='Flood area (km²)'),
-            height=200, margin=dict(l=0,r=0,t=10,b=0),
-            showlegend=False)
-        st.plotly_chart(fig_spark, width='stretch')
-
-        # District heatmap
-        st.markdown('<p class="section-header">District Flood Area — Last 4 Weeks</p>',
-                    unsafe_allow_html=True)
-        pivot = district_w.pivot(index='district', columns='week',
-                                 values='flood_area')
-        fig_heat = go.Figure(data=go.Heatmap(
-            z=pivot.values, x=pivot.columns.tolist(),
-            y=pivot.index.tolist(),
-            colorscale=[[0,'#0a1628'],[0.3,'#1b4f72'],
-                        [0.6,'#ff8800'],[1,'#ff4444']],
-            text=pivot.values.round(1),
-            texttemplate='%{text}',
-            textfont=dict(size=11, color='white'),
-            showscale=True,
-            colorbar=dict(title='km²', thickness=12,
-                          tickfont=dict(color='#c8d8e8'))))
-        fig_heat.update_layout(
-            paper_bgcolor='#0a1628', plot_bgcolor='#0a1628',
-            font=dict(color='#c8d8e8'),
-            xaxis=dict(tickfont=dict(color='#c8d8e8')),
-            yaxis=dict(tickfont=dict(color='#c8d8e8')),
-            height=180, margin=dict(l=0,r=0,t=10,b=0))
-        st.plotly_chart(fig_heat, width='stretch')
-
-        # Summary metrics for the selected period
-        mask = ((weekly_df['week_ending'].dt.date >= start) &
-                (weekly_df['week_ending'].dt.date <= end_date))
-        period_df = weekly_df[mask]
-        if period_df.empty:
-            period_df = weekly_df.tail(1)
-
-        summary = {
-            'flood_area':  float(period_df['flood_area'].mean().round(1)),
-            'pop_at_risk': int(period_df['pop_at_risk'].mean()),
-            'alerts_sent': int(period_df['alerts_sent'].sum()),
-            'rain_7d':     float(period_df['rain_7d'].mean().round(1)),
-        }
-
-        ca, cb, cc, cd = st.columns(4)
-        with ca: st.metric("Avg flood area", f"{summary['flood_area']} km²")
-        with cb: st.metric("Pop. at risk",  f"{summary['pop_at_risk']:,}")
-        with cc: st.metric("Alerts sent",   str(summary['alerts_sent']))
-        with cd: st.metric("Avg rain 7d",   f"{summary['rain_7d']} mm")
-
-    # ── Generate and download ─────────────────────────────────────────
-    if generate_btn:
-        html_content = build_report_html(
-            period      = period,
-            start_date  = start.strftime('%Y-%m-%d'),
-            end_date    = end_date.strftime('%Y-%m-%d'),
-            summary     = summary,
-            district_data = district_w,
-            include_map = include_map,
-            include_alerts = include_alerts,
-            include_model  = include_model,
-            prepared_by = prepared_by,
-        )
-
-        filename = (f"malawi_flood_ews_report_"
-                    f"{period.lower()}_{end_date.strftime('%Y%m%d')}.html")
-
-        st.success(f"✅ Report generated — {filename}")
-        st.download_button(
-            label      = "⬇️ Download HTML Report",
-            data       = html_content,
-            file_name  = filename,
-            mime       = "text/html",
-        )
-
-        # JSON data export
-        json_data = {
-            'report_period': period,
-            'start_date':    str(start),
-            'end_date':      str(end_date),
-            'generated_at':  datetime.datetime.now().isoformat(),
-            'prepared_by':   prepared_by,
-            'distribution':  distribution,
-            'summary':       summary,
-            'district_data': district_w.tail(6).to_dict(orient='records'),
-        }
-        st.download_button(
-            label     = "⬇️ Download JSON Data",
-            data      = json.dumps(json_data, indent=2, default=str),
-            file_name = filename.replace('.html', '.json'),
-            mime      = "application/json",
-        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<p class="section-header">District Summary</p>', unsafe_allow_html=True)
+        dist_df = pd.DataFrame(_DISTRICT_DATA)
+        dist_df.columns = pd.Index(['District','Risk','Flood (km²)','Pop. at Risk','Villages','Status'])
+        st.dataframe(dist_df[['District','Risk','Flood (km²)','Pop. at Risk','Villages','Status']],
+                     use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.markdown('<p class="section-header">Report Preview</p>',
-                    unsafe_allow_html=True)
-        st.components.v1.html(html_content, height=600, scrolling=True)
-
-    # ── Scheduled reports info ─────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<p class="section-header">Automated Scheduling</p>',
-                unsafe_allow_html=True)
-    st.info(
-        "To schedule automatic report generation, add a cron job to your "
-        "server or Render deployment:\n\n"
-        "**Weekly (every Monday 06:00 UTC):**\n"
-        "`0 6 * * 1 python pipeline.py --report weekly`\n\n"
-        "**Monthly (1st of month, 06:00 UTC):**\n"
-        "`0 6 1 * * python pipeline.py --report monthly`\n\n"
-        "Reports are saved to the `MalawiFloodEWS/reports/` folder in "
-        "Google Drive and optionally emailed to the distribution list."
-    )
+        st.markdown('<p class="section-header">Recent Reports Issued</p>', unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame([
+            {"Date":"2026-03-22","Type":"Situation Report","Author":"DoDMA Duty Officer","Alert":"HIGH"},
+            {"Date":"2026-03-21","Type":"Alert Bulletin",  "Author":"DoDMA Duty Officer","Alert":"HIGH"},
+            {"Date":"2026-03-20","Type":"Situation Report","Author":"Grace Mwale",        "Alert":"MEDIUM"},
+            {"Date":"2026-03-19","Type":"Alert Bulletin",  "Author":"DoDMA Duty Officer","Alert":"MEDIUM"},
+        ]), use_container_width=True, hide_index=True)
